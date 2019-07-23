@@ -1,0 +1,20 @@
+#!/bin/bash
+#SBATCH   -p normal
+#SBATCH   -n 24
+#SBATCH   -N 1
+#SBATCH   -t 48:00:00
+#SBATCH   -J batch_jobs_20160922
+#SBATCH   -A FusionFissionHybrid
+#SBATCH   --mail-user=zpchen@physics.utexas.edu
+#SBATCH   --mail-type=end
+#SBATCH   --mail-type=fail
+
+module load python
+export PYTHONPATH=${WORK}/solps/solps5.1/runs/pylauncher:${PYTHONPATH}
+export PYTHONPATH=${WORK}/solps/solps5.1/runs/pylauncher/python-hostlist-1.16:${PYTHONPATH}
+echo "### Jobs submitted on `date` from batch_commands_2 ###" >> incomplete_jobs.txt
+grep -o "|.*\$SOLPSTOP/runs/.*|d" batch_commands_2 | sed -e "s/.\{2\}$//" | sed "s/^.\{2\}//g" >> incomplete_jobs.txt
+PYTHONPATH=..:${PYTHONPATH} python launcher_2.py
+rm -rf pylauncher_tmpdir"${SLURM_JOB_ID}"
+rm -f batch_jobs_1.o"${SLURM_JOB_ID}"
+rm -f batch_jobs_1.po"${SLURM_JOB_ID}"

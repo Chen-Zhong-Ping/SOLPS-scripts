@@ -1,0 +1,56 @@
+#! /bin/csh -f
+
+# If HOST_NAME isn't defined yet, do it here...
+if (! $?HOST_NAME ) then
+  if (-e whereami) then
+    set HOST_NAME=`./whereami|tail -1`
+  else
+    set HOST_NAME="UNKNOWN"
+  endif
+
+  if ( $HOST_NAME == "*UNKNOWN*" ) then
+    set HOST_NAME=default
+  endif
+  echo "Using HOST_NAME = $HOST_NAME"
+endif
+
+# List of default compilers per HOST_NAME
+switch ($HOST_NAME)
+case "ASIPP":
+case "FZJ":
+case "GA":
+case "IFERC":
+case "IN-DA":
+case "IPP":
+case "IPP-HGW":
+case "IPR":
+case "ITER":
+case "ITM":
+case "JET":
+case "KEIO":
+case "KSTAR":
+case "LEUVEN":
+case "SPBSTU":
+case "SWIP":
+  echo ifort64
+  breaksw
+case "CCFE":
+case "ENEA":
+case "PPPL":
+  echo pgf90
+  breaksw
+case "MEPHI":
+case "WM":
+case "ORNL":
+  echo gfortran
+  breaksw
+
+# chen edit
+case "Chen_TACC":
+  echo ifort64
+  breaksw
+#
+
+default:
+  echo ifort64
+endsw

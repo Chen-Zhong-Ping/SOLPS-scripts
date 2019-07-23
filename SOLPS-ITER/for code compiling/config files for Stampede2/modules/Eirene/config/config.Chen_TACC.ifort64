@@ -1,0 +1,53 @@
+# Test whether necessary variables are set
+ifndef LD_GR
+  $(error LD_GR not defined)
+endif
+ifndef LD_GKS
+  $(error LD_GKS not defined)
+endif
+ifndef LD_NAG
+  $(error LD_NAG not defined)
+endif
+ifndef GLI_HOME
+  $(error GLI_HOME not defined)
+endif
+
+# DEFINES += -DRECL_UNITS_PER_DOUBLE=8 -DNO_F01AAF -DNO_SAVE
+
+CPP     = -/lib/cpp -C -traditional
+ifdef USE_MPI
+FC      = mpif90
+else
+ifdef USE_IMPGYRO
+FC      = mpif90
+else
+FC      = ifort
+endif
+endif
+CC      = /usr/bin/gcc
+
+# modifications to FCOPTS for Chen_TACC
+ifdef SOLPS_DEBUG
+FCOPTS  = -g -C -debug all -traceback
+FCOPTS  = -g -C -traceback -recursive -check all -debug all
+CFLAGS  = -g
+else
+FCOPTS  = -O3 -fpp
+CFLAGS  = -O3
+endif
+
+GKS     = ${LD_GR} ${LD_GKS} -lX11 -lXt
+
+LDLIBS  = -L/usr/local/lib -L/usr/X11R6/lib64
+LDEXTRA =
+
+# new
+
+INCMOD  = -I
+MOD     = mod
+OBJDEST = -module ${OBJDIR} -o $@
+
+#!!!Local Variables:
+#!!! mode: Makefile
+#!!! End:
+

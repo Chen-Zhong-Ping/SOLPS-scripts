@@ -1,0 +1,48 @@
+#!/bin/sh
+
+exec 3<&0
+exec 0< "cases.txt"
+
+N=0
+while read LINE
+do
+  if [[ "${LINE:0:1}" != "#" && "${LINE:0:1}" != " " && "${LINE:0:1}" != "" ]]
+  then
+     N=$((N+1))
+     LINE="$(echo -e "${LINE}" | sed -e 's/[[:space:]]*$//')"
+     LIST[$N]=$LINE
+  fi
+done
+
+exec 0<&3
+
+NUM_BATCHES=`echo "($N + 24 - 1)/24" | bc`
+REMAINDER=$((N % 24))
+
+N=0
+
+for J in `seq 1 $NUM_BATCHES`
+do
+
+  [ -e batch_commands_$J ] && rm batch_commands_$J
+
+  if [[ "$J" -eq "$NUM_BATCHES" && "$REMAINDER" -ne 0 ]]
+  then
+    LOOP_LIM=$REMAINDER
+  else
+    LOOP_LIM=24
+  fi
+
+  for K in `seq 1 $LOOP_LIM`
+  do
+    K=`printf %02d $K`
+    N=$((N+1))
+
+    COMMANDS="cd \$WORK/solps/solps5.1/ ; source setup.ksh ; cd \$SOLPSTOP/runs/${LIST[N]} ; \$SOLPSTOP/bin/common/b2run b2mn < input.dat >& /dev/null ; if [ -e b2fstate ] && [ \`stat -c %s b2fstate\` -ge \`stat -c %s b2fstati\` ] ; then rm -rf b2mn.exe.dir ; sleep 10 ; cp b2fstate b2fstati ; sed -i \"\|\\\$SOPLSTOP/runs/${LIST[N]}|d\" \$SOLPSTOP/runs/pylauncher/incomplete_jobs.txt ; fi"
+    echo "$COMMANDS" >> batch_commands_$J
+    echo "" >> batch_commands_$J
+
+  done
+done
+
+# Modified by Chen 2016Aug16: A "sleep 10" command has been added in front of the "cp b2fstate b2fstati" command.

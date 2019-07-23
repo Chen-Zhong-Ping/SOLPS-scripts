@@ -1,0 +1,54 @@
+#!/bin/tcsh
+#SBATCH -J 20190203-p12.0n12.5-vsa0.2-c16        # Job Name
+#SBATCH -N 1
+#SBATCH -n 64           # Total number of mpi tasks requested
+#SBATCH --tasks-per-node 64
+#SBATCH -p normal       # Queue (partition) name -- normal, development, etc.
+#SBATCH -t 43:55:00     # Run time (hh:mm:ss)
+#SBATCH -A ITERP
+
+#SBATCH   --mail-user=chenzhongping@utexas.edu
+#SBATCH   --mail-type=end
+#SBATCH   --mail-type=fail
+
+
+# start job commands:
+
+cd /work/03485/zpchen/solps-iter-20181205_SP2/solps-iter/
+
+source Chen_TACC_setup.csh
+
+cd runs/d3d/2018entrainment/SD/S20190203@25-6-66_24-6.v001/vsa0.2/p12.0e6n12.5e19/run-16c
+
+# start=`date +%s`
+
+set i = 0
+
+while ($i < 10)
+
+    set backup_dir = $SCRATCH/vsa0.2SDp12.0n12.5/bkup05_$i
+
+    b2run -m \"ibrun -np 16\" b2mn >& /dev/null
+
+    if ( ( -e b2fstate ) && ( `stat -c %s b2fstate` == `stat -c %s b2fstati` ) ) then
+        rm -r b2mn.exe.dir
+        cd ..
+        cp -r run-16c $backup_dir
+        sleep 3
+        cd -
+        cp b2fstate b2fstati
+        cd $backup_dir
+        cp b2fstate b2fstati
+        cd -
+    else
+        set i = 10
+    endif
+
+    @ i++
+end
+# end=`date +%s`
+# runtime=$((end-start))
+
+# echo ""
+# echo "case name:" $(basename $PWD)
+# echo "run duration" $(($runtime/3600))":"$(($runtime%3600/60))":"$(($runtime%60))

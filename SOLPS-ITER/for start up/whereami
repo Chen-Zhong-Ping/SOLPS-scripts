@@ -1,0 +1,213 @@
+#! /bin/csh -f
+set machine_location=`hostname`
+set mephi_check=`echo $machine_location | cut -c1-4` 
+if ("$mephi_check" == "head" || "$mephi_check" == "node") then 
+  echo "mephi_check = $mephi_check - special mephi cluster treatment applies"
+  set machine_location="cluster21.mephi.ru"
+  set fullhost=$machine_location
+else
+  set fullhost=`nslookup $machine_location | grep -m 1 Name | awk '/Name:/{print $2}' | tr 'A-Z' 'a-z'`
+  if ("$fullhost" == "") then
+    set fullhost=`hostname -f`
+  endif
+endif
+switch ($fullhost)
+case "*.iter.org":
+  echo ITER
+  breaksw
+case "*.iaea.org":
+  echo IAEA
+  breaksw
+case "*.iferc-csc.org":
+  echo IFERC
+  breaksw
+case "*.itm.rzg.mpg.de":
+  echo IPPITM
+  breaksw
+case "*.efda-itm.eu":
+case "*.marconi.cineca.it"
+  echo ITM
+  breaksw
+case "*.ipp-garching.mpg.de":
+case "*.ipp.mpg.de":
+case "*.rzg.mpg.de":
+  echo IPP
+  breaksw
+case "*.ipp-hgw.mpg.de":
+  echo IPP-HGW
+  breaksw
+case "*.fz-juelich.de":
+case "*.ipp.kfa-juelich.de":
+  echo FZJ
+  breaksw
+case "*.ccfe.ac.uk":
+  echo CCFE
+  breaksw
+case "*.jet.uk":
+case "*.hpc.l":
+  echo JET
+  breaksw
+case "*.mech.kuleuven.be":
+case "*.icts.leuven.vsc":
+  echo LEUVEN
+  breaksw
+case "*.pppl.gov":
+  echo PPPL
+  breaksw
+case "*.fusion.gat.com":
+  echo GA
+  breaksw
+case "*.wm.edu":
+  echo WM
+  breaksw
+case "*.nersc.gov":
+  echo NERSC
+  breaksw
+case "*.ornl.gov":
+  echo ORNL
+  breaksw
+case "*.ipp.cas.cn":
+  echo ASIPP
+  breaksw
+case "*.swip.ac.cn":
+case "mgmt":
+  echo SWIP
+  breaksw
+case "*.ipr.res.in":
+  echo IPR
+  breaksw
+case "iter-india.org":
+case "*.iter-india.org":
+  echo IN-DA
+  breaksw
+case "*.keio.ac.jp":
+  echo KEIO
+  breaksw
+case "kraken01":
+  echo KSTAR
+  breaksw
+case "*.spbau.ru":
+case "login1.cluster":
+case "n01p*.cluster":
+case "PLASMATHEORY08":
+  echo SPBSTU
+  breaksw
+case "*.mephi.ru":
+  echo MEPHI
+  breaksw
+case "*.cn":
+case "*.hk":
+case "*.mo":
+  echo CN_UNKNOWN
+  breaksw
+case "*.eu":
+case "*.ac":
+case "*.an":
+case "*.at":
+case "*.aw":
+case "*.ax":
+case "*.be":
+case "*.bg":
+case "*.bl":
+case "*.bq":
+case "*.bv":
+case "*.ch":
+case "*.cw":
+case "*.cy":
+case "*.cz":
+case "*.de":
+case "*.dk":
+case "*.ee":
+case "*.es":
+case "*.fi":
+case "*.fk":
+case "*.fo":
+case "*.fr":
+case "*.gb":
+case "*.gf":
+case "*.gg":
+case "*.gi":
+case "*.gl":
+case "*.gp":
+case "*.gr":
+case "*.gs":
+case "*.hr":
+case "*.hu":
+case "*.ie":
+case "*.im":
+case "*.io":
+case "*.it":
+case "*.je":
+case "*.lt":
+case "*.lu":
+case "*.lv":
+case "*.mc":
+case "*.mf":
+case "*.mq":
+case "*.mt":
+case "*.nc":
+case "*.nl":
+case "*.pf":
+case "*.pl":
+case "*.pm":
+case "*.pn":
+case "*.pt":
+case "*.re":
+case "*.ro":
+case "*.se":
+case "*.sh":
+case "*.si":
+case "*.sk":
+case "*.sx":
+case "*.tf":
+case "*.ua":
+case "*.uk":
+case "*.vg":
+case "*.wf":
+case "*.yt":
+  echo EU_UNKNOWN
+  breaksw
+case "*.in":
+  echo IN_UNKNOWN
+  breaksw
+case "*.jp":
+  echo JP_UNKNOWN
+  breaksw
+case "*.kr":
+  echo KR_UNKNOWN
+  breaksw
+case "*.ru":
+case "*.su:"
+  echo RU_UNKNOWN
+  breaksw
+
+# chen edit
+case "*.utexas.edu":
+  echo Chen_TACC
+  breaksw
+#
+
+case "*.gov":
+case "*.edu":
+case "*.as":
+case "*.gu":
+case "*.mp":
+case "*.pr":
+case "*.um":
+case "*.us":
+case "*.vi":
+  echo USA_UNKNOWN
+  breaksw
+case "*.au":
+case "*.cc":
+case "*.cx":
+case "*.hm":
+case "*.nf":
+  echo AU_UNKNOWN
+  breaksw
+case "*.kz":
+  echo KZ_UNKNOWN
+  breaksw
+default:
+  echo UNKNOWN
+endsw

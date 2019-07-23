@@ -1,0 +1,227 @@
+#!/bin/bash
+
+# Special by Chen 2017 January
+
+if [[ -z `which b2plot 2> /dev/null` ]] ; then echo "SOLPS b2plot path undefined. Source setup.ksh first." ; exit 1 ; fi
+
+ANALYSIS="analysis"                      # Name of directory where results are to be stored
+OUTFILE=b2pl.exe.dir/b2plot.write        # Name of file where formatted output is written by b2plot
+OUTPLOT=b2plot.ps                        # Name of plot file written by b2plot
+SUMMARY=summary.txt                      # Name of file where divertor summary data is written
+FORMAT="sep vesl outl phys 1.3 rmin 1.6 rmax 1. zmin 1.3 zmax" # 1. rmin 1.5 rmax -1.4 zmin -.9 zmax
+
+POWERCALC="powercalc"
+if [[ -n `which b2graphs 2> /dev/null` ]] ; then       # Look for directory where b2graphs (and POWERCALC)
+   BINDIR=`dirname $(which b2graphs)`                  # is stored in case a radiation load analysis is
+elif [[ -L b2graphs ]] ; then                          # desired
+   BINDIR=`dirname $(readlink b2graphs)`
+elif [[ -f b2graphs ]] ; then
+   BINDIR="."
+else
+   echo "   WARNING: Binary directory is undefined because b2graphs cannot"
+   echo "   be found. $POWERCALC cannot be run."
+fi
+
+[[ -d $ANALYSIS ]] && rm -rf $ANALYSIS
+mkdir $ANALYSIS
+
+
+###########################################
+##### Find mesh file name in b2ag.dat #####
+###########################################
+
+echo "Looking for .SNO-format mesh file ..."
+
+[[ -e ../baserun/b2ag.dat ]] && MESH_FILE="../baserun/$(grep -m 1 "b2agfs_geometry" ../baserun/b2ag.dat | awk -F\' '{print $4}')"
+[[ -e b2ag.dat ]] && MESH_FILE=`grep -m 1 "b2agfs_geometry" b2ag.dat | awk -F\' '{print $4}'`
+
+[[ $MESH_FILE != *.sno ]] && echo "No .SNO-format mesh file specified in b2ag.dat. Looking in current directory ..." && MESH_FILE=`ls *.sno`
+[[ $MESH_FILE != *.sno ]] && echo "No .SNO-format mesh file found. Script cannot run." && exit 1
+
+echo "Mesh file identified as $MESH_FILE"
+
+
+##########################################
+##### Read parameters from mesh file #####
+##########################################
+
+echo "Reading mesh file ..."
+
+NX=`grep -m 1 "nx" $MESH_FILE | awk '{print $3}'`
+NY=`grep -m 1 "ny" $MESH_FILE | awk '{print $3}'`
+NCUT=`grep -m 1 "ncut" $MESH_FILE | awk '{print $3}'`
+NYCUT=`grep -m 1 "nycut" $MESH_FILE | awk '{print $3}'`    # It is the cell index next to the separatrix, outside
+
+if [[ $NCUT = 2 ]]      # single-nulls
+then
+   NXCUT[1]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $3}'`
+   NXCUT[4]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $4}'`
+elif [[ $NCUT = 4 ]]    # double-nulls
+then
+   NISO=`grep -m 1 "niso" $MESH_FILE | awk '{print $3}'`
+   NXISO=`grep -m 1 "nxiso" $MESH_FILE | awk '{print $3}'`
+
+   NXCUT[1]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $3}'`
+   NXCUT[2]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $4}'`
+   NXCUT[3]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $5}'`
+   NXCUT[4]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $6}'`
+fi
+
+
+#######################################
+####### Read midplane cell indices ####         # Chen
+#######################################
+
+MIDPLANE_IN=`grep "jxi" b2mn.dat | awk -F\' '{print $4}'`
+MIDPLANE_OUT=`grep "jxa" b2mn.dat | awk -F\' '{print $4}'`
+
+
+####################################################
+###### FREQUENTLY USED VARIABLES AND FUNCTIONS #####
+####################################################
+
+# B2 cell indices for target/divertor profiles at cell centers (scalars)
+
+TARG_CELL[1]=0                   # Cell index for Target 1
+TARG_CELL[2]=$((NXISO-2))        # Cell index for Target 2 (double-null only)
+TARG_CELL[3]=$((NXISO+1))        # Cell index for Target 3 (double-null only)
+TARG_CELL[4]=$((NX-1))           # Cell index for Target 4
+XPT_CELL[1]=$((NXCUT[1]-1))      # Cell index for Divertor 1 entrance
+XPT_CELL[2]=${NXCUT[2]}          # Cell index for Divertor 2 entrance (double-null only)
+XPT_CELL[3]=$((NXCUT[3]-1))      # Cell index for Divertor 3 entrance (double-null only)
+XPT_CELL[4]=${NXCUT[4]}          # Cell index for Divertor 4 entrance
+
+# B2 cell indices for target/divertor profiles at cell faces (fluxes)
+
+FLUX_TARG_CELL[1]=0                   # Cell index for Target 1
+FLUX_TARG_CELL[2]=$((NXISO-1))        # Cell index for Target 2 (double-null only)
+FLUX_TARG_CELL[3]=$((NXISO+1))        # Cell index for Target 3 (double-null only)
+FLUX_TARG_CELL[4]=$NX                 # Cell index for Target 4
+FLUX_XPT_CELL[1]=${NXCUT[1]}          # Cell index for Divertor 1 entrance
+FLUX_XPT_CELL[2]=${NXCUT[2]}          # Cell index for Divertor 2 entrance (double-null only)
+FLUX_XPT_CELL[3]=${NXCUT[3]}          # Cell index for Divertor 3 entrance (double-null only)
+FLUX_XPT_CELL[4]=${NXCUT[4]}          # Cell index for Divertor 4 entrance
+
+INC() {                    # This function determines which way to increment the cell index
+   echo "-1^$N" | bc       # when making poloidal profiles, depending on the divertor leg, so
+}                          # that all profiles are written from upstream to downstream
+
+ABS() {                          # Absolute value function
+   if [[ `echo "$1 < 0.0" | bc -l` = 1 ]] ; then
+      echo `echo "-1*$1" | bc -l`
+   else
+      echo $1
+   fi
+}
+
+
+##########################################
+##### POLOIDAL   PROFILES  #####
+##########################################
+
+echo "Calculating poloidal temperature profiles ..."
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+
+#####  Electron temperature
+
+
+PEAK_CELL=9  # Manual switch -Chen
+
+echo "te $PEAK_CELL writ f.x" | b2plot >& /dev/null   # Plot poloidal Te along peak radial cell
+
+echo "Poloical profile of Electron temperature (@ cell center)" >> $ANALYSIS/te_fx$N-info.txt
+echo "Units: eV" >> $ANALYSIS/te_fx$N-info.txt
+echo "IY = " $PEAK_CELL >> $ANALYSIS/te_fx$N-info.txt
+
+for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+4))`; do       # Go to the boundary cell -Chen
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/te_fx$N.txt
+done
+
+if [[ $N = 4 ]]; then    # added by Chen
+  for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+4))`; do       # Go to the boundary cell -Chen
+     echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/te_fx$N-long.txt
+  done
+fi
+
+##### connection length
+
+  echo "conn $PEAK_CELL writ f.x" | b2plot >& /dev/null   # Plot connection length along peak radial cell
+
+  echo "Poloical profile of connection length (@ cell center)" >> $ANALYSIS/conn_fx$N-info.txt
+  echo "Units: m" >> $ANALYSIS/conn_fx$N-info.txt
+  echo "IY = " $PEAK_CELL >> $ANALYSIS/conn_fx$N-info.txt
+
+  for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+4))`; do            # Go to the boundary cell -Chen
+     echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/conn_fx$N.txt
+  done
+
+  if [[ $N = 4 ]]; then    # added by Chen
+    for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+4))`; do         # Go to the boundary cell -Chen
+       echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/conn_fx$N-long.txt
+    done
+  fi
+
+##### flux tube and Q_parallel profiles
+
+echo "hx $PEAK_CELL writ f.x" | b2plot >& /dev/null     # Get cell lengths to translate from cell centers to cell faces
+
+   for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+      HX[$i]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`
+      HX[$i]=${HX[i]/E+/*10^}; HX[$i]=${HX[i]/E-/*10^-}
+   done
+
+### Calculate sin(theta)  
+
+echo "qc bx bb m/ m* $PEAK_CELL writ f.x" | b2plot >& /dev/null
+
+echo "Field angle sin(theta) (@ cell face)" >> $ANALYSIS/Bsin_fx$N-info.txt
+echo "Units: none" >> $ANALYSIS/Bsin_fx$N-info.txt
+echo "IY = $PEAK_CELL" >> $ANALYSIS/Bsin_fx$N-info.txt
+
+for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+      DX[$i]=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`
+      DX[$i]=${DX[i]/E+/*10^}; DX[$i]=${DX[i]/E-/*10^-}
+      FLUXDX[$i]=`echo "${DX[i]} - ${HX[i]}/2.0" | bc -l`
+
+   echo ${FLUXDX[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/Bsin_fx$N.txt
+done
+
+### Calculate A_parallel
+
+echo "sx qc m* bx bb m/ m* abs $PEAK_CELL writ f.x" | b2plot >& /dev/null
+
+echo "Flux tube area (@ cell face)" >> $ANALYSIS/Apara_fx$N-info.txt
+echo "Units: m^2" >> $ANALYSIS/Apara_fx$N-info.txt
+echo "IY = $PEAK_CELL" >> $ANALYSIS/Apara_fx$N-info.txt
+
+for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo ${FLUXDX[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/Apara_fx$N.txt
+done
+
+### Calculate Q_parallel  
+
+echo "fhtx psx qc m/ bb bx m/ m* 1.e6 rm/ $PEAK_CELL writ f.x" | b2plot >& /dev/null
+
+echo "Parallel heat flux (@ cell face)" >> $ANALYSIS/qpara_fx$N-info.txt
+echo "Units: MW/m^2" >> $ANALYSIS/qpara_fx$N-info.txt
+echo "IY = $PEAK_CELL" >> $ANALYSIS/qpara_fx$N-info.txt
+
+for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo ${FLUXDX[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/qpara_fx$N.txt
+done
+
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+################################
+################################
+################################
+
+echo ""
+echo "Analysis complete."
+echo "Results located in '$ANALYSIS' directory."
+

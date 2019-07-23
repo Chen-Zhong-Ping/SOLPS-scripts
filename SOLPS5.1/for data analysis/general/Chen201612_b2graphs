@@ -1,0 +1,1293 @@
+#!/bin/bash
+
+# Creates and displays pertinent divertor performance data using SOLPS b2plot routine. Read headers for details.
+# Created by B. Covele and ZP Chen during a collaboration from Jan to Nov 2015.
+
+# Modified by Zhongping Chen 2016 October
+# - Separate the headers and the data, so that the data file has data only which makes it directly readable/importable to Mathematica.
+# - Added a longer version to each poloidal profile, which run from the outboard midplane to the target.
+# - Added the outboard midplane radial profiles for Te and Ptot
+
+if [[ -z `which b2plot 2> /dev/null` ]] ; then echo "SOLPS b2plot path undefined. Source setup.ksh first." ; exit 1 ; fi
+
+ANALYSIS="analysis"                      # Name of directory where results are to be stored
+OUTFILE=b2pl.exe.dir/b2plot.write        # Name of file where formatted output is written by b2plot
+OUTPLOT=b2plot.ps                        # Name of plot file written by b2plot
+SUMMARY=summary.txt                      # Name of file where divertor summary data is written
+FORMAT="sep vesl outl phys 1.3 rmin 1.6 rmax 1. zmin 1.3 zmax" # 1. rmin 1.5 rmax -1.4 zmin -.9 zmax
+
+POWERCALC="powercalc"
+if [[ -n `which b2graphs 2> /dev/null` ]] ; then       # Look for directory where b2graphs
+   BINDIR=`dirname $(which b2graphs)`                  # is stored in case a radiation load analysis is
+elif [[ -L b2graphs ]] ; then                          # desired
+   BINDIR=`dirname $(readlink b2graphs)`
+elif [[ -f b2graphs ]] ; then
+   BINDIR="."
+else
+   echo "   WARNING: Binary directory is undefined because b2graphs cannot"
+   echo "   be found. $POWERCALC cannot be run."
+fi
+
+[[ -d $ANALYSIS ]] && rm -rf $ANALYSIS
+mkdir $ANALYSIS
+
+
+###########################################
+##### Find mesh file name in b2ag.dat #####
+###########################################
+
+echo "Looking for .SNO-format mesh file ..."
+
+[[ -e ../baserun/b2ag.dat ]] && MESH_FILE="../baserun/$(grep -m 1 "b2agfs_geometry" ../baserun/b2ag.dat | awk -F\' '{print $4}')"
+[[ -e b2ag.dat ]] && MESH_FILE=`grep -m 1 "b2agfs_geometry" b2ag.dat | awk -F\' '{print $4}'`
+
+[[ $MESH_FILE != *.sno ]] && echo "No .SNO-format mesh file specified in b2ag.dat. Looking in current directory ..." && MESH_FILE=`ls *.sno`
+[[ $MESH_FILE != *.sno ]] && echo "No .SNO-format mesh file found. Script cannot run." && exit 1
+
+echo "Mesh file identified as $MESH_FILE"
+
+
+##########################################
+##### Read parameters from mesh file #####
+##########################################
+
+echo "Reading mesh file ..."
+
+NX=`grep -m 1 "nx" $MESH_FILE | awk '{print $3}'`
+NY=`grep -m 1 "ny" $MESH_FILE | awk '{print $3}'`
+NCUT=`grep -m 1 "ncut" $MESH_FILE | awk '{print $3}'`
+NYCUT=`grep -m 1 "nycut" $MESH_FILE | awk '{print $3}'`    # It is the cell index next to the separatrix, outside
+
+if [[ $NCUT = 2 ]]      # single-nulls
+then
+   NXCUT[1]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $3}'`
+   NXCUT[4]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $4}'`
+elif [[ $NCUT = 4 ]]    # double-nulls
+then
+   NISO=`grep -m 1 "niso" $MESH_FILE | awk '{print $3}'`
+   NXISO=`grep -m 1 "nxiso" $MESH_FILE | awk '{print $3}'`
+
+   NXCUT[1]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $3}'`
+   NXCUT[2]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $4}'`
+   NXCUT[3]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $5}'`
+   NXCUT[4]=`grep -m 1 "nxcut" $MESH_FILE | awk '{print $6}'`
+fi
+
+
+#######################################
+####### Read midplane cell indices ####
+#######################################
+
+MIDPLANE_IN=`grep "jxi" b2mn.dat | awk -F\' '{print $4}'`
+MIDPLANE_OUT=`grep "jxa" b2mn.dat | awk -F\' '{print $4}'`
+
+
+####################################################
+###### FREQUENTLY USED VARIABLES AND FUNCTIONS #####
+####################################################
+
+# B2 cell indices for target/divertor profiles at cell centers (scalars)
+
+TARG_CELL[1]=0                   # Cell index for Target 1
+TARG_CELL[2]=$((NXISO-2))        # Cell index for Target 2 (double-null only)
+TARG_CELL[3]=$((NXISO+1))        # Cell index for Target 3 (double-null only)
+TARG_CELL[4]=$((NX-1))           # Cell index for Target 4
+XPT_CELL[1]=$((NXCUT[1]-1))      # Cell index for Divertor 1 entrance
+XPT_CELL[2]=${NXCUT[2]}          # Cell index for Divertor 2 entrance (double-null only)
+XPT_CELL[3]=$((NXCUT[3]-1))      # Cell index for Divertor 3 entrance (double-null only)
+XPT_CELL[4]=${NXCUT[4]}          # Cell index for Divertor 4 entrance
+
+# B2 cell indices for target/divertor profiles at cell faces (fluxes)
+
+FLUX_TARG_CELL[1]=0                   # Cell index for Target 1
+FLUX_TARG_CELL[2]=$((NXISO-1))        # Cell index for Target 2 (double-null only)
+FLUX_TARG_CELL[3]=$((NXISO+1))        # Cell index for Target 3 (double-null only)
+FLUX_TARG_CELL[4]=$NX                 # Cell index for Target 4
+FLUX_XPT_CELL[1]=${NXCUT[1]}          # Cell index for Divertor 1 entrance
+FLUX_XPT_CELL[2]=${NXCUT[2]}          # Cell index for Divertor 2 entrance (double-null only)
+FLUX_XPT_CELL[3]=${NXCUT[3]}          # Cell index for Divertor 3 entrance (double-null only)
+FLUX_XPT_CELL[4]=${NXCUT[4]}          # Cell index for Divertor 4 entrance
+
+INC() {                    # This function determines which way to increment the cell index
+   echo "-1^$N" | bc       # when making poloidal profiles, depending on the divertor leg, so
+}                          # that all profiles are written from upstream to downstream
+
+ABS() {                          # Absolute value function
+   if [[ `echo "$1 < 0.0" | bc -l` = 1 ]] ; then
+      echo `echo "-1*$1" | bc -l`
+   else
+      echo $1
+   fi
+}
+
+
+#####################
+##### SOL POWER #####
+#####################
+
+echo "Calculating SOL power ..."
+
+if [[ "$NCUT" = 2 ]]   # For single-nulls
+then
+
+   echo "fhty ${XPT_CELL[1]} ixgt m* ${XPT_CELL[4]} ixlt m* sumx 1.e6 rm/ $NYCUT writ f.x" | b2plot >& /dev/null
+   POWER_SOL=`awk 'NR==2{print $2}' $OUTFILE`      # Record the summed power in the first line of data
+   echo "SOL Power (MW): " $POWER_SOL >> $ANALYSIS/$SUMMARY
+
+elif [[ "$NCUT" = 4 ]]   # For double-nulls
+then
+
+   echo "fhty ${XPT_CELL[1]} ixgt m* ${XPT_CELL[2]} ixlt m* sumx fhty ${XPT_CELL[3]} ixgt m* ${XPT_CELL[4]} ixlt m* sumx m+ 1.e6 rm/ $NYCUT writ f.x" | b2plot >& /dev/null
+   POWER_SOL=`awk 'NR==2{print $2}' $OUTFILE`      # Record the summed power in the first line of data
+   echo "SOL Power (MW): " $POWER_SOL >> $ANALYSIS/$SUMMARY
+
+fi
+
+
+################################
+##### NORTH BOUNDARY POWER #####
+################################
+
+echo "Calculating power across North boundary ..."
+
+echo "fhty sumx 1.e6 rm/ $NY writ f.x" | b2plot >& /dev/null
+POWER_NORTH=`awk 'NR==2{print $2}' $OUTFILE`      # Record the summed power in the first line of data
+POWER_NORTH=${POWER_NORTH/E+/*10^}
+POWER_NORTH=${POWER_NORTH/E-/*10^-}
+printf -v POWER_NORTH "%0.2f" `echo "$POWER_NORTH" | bc -l`
+echo "North Boundary Power (MW): " $POWER_NORTH >> $ANALYSIS/$SUMMARY
+
+if [[ `echo "$POWER_NORTH/$POWER_SOL > 0.2" | bc -l` = 1 ]]
+then
+   echo "     WARNING: Total SOL power fraction through the North boundary exceeds 20%."
+   echo "     The radial extent of this mesh may be insufficient for this transport profile."
+   echo "     Calculation of the power SOL width by integration of the heat flux profile"
+   echo "     should be treated suspiciously."
+fi
+
+
+###########################
+##### POWER SOL WIDTH #####
+###########################
+
+echo "Calculating power SOL width ..."
+
+### Test for special upper single-null case (poloidal cell index order reversed)
+
+JXI=`grep "jxi" b2mn.dat | awk -F\' '{print $4}'`
+JXA=`grep "jxa" b2mn.dat | awk -F\' '{print $4}'`
+
+if [[ -z $JXI || -z $JXA ]] ; then echo "ERROR: Please specify jxa and jxi in b2mn.dat to calculate the SOL width." ; exit 1 ; fi
+
+if [[ $JXA -lt $JXI ]]     # USN
+then
+   echo "     Note: Upper single-nulls number their targets starting from the outboard side!"
+   echo "fhtx ${XPT_CELL[1]} writ f.y" | b2plot >& /dev/null
+else                       # LSN or DN
+   echo "fhtx ${XPT_CELL[4]} writ f.y" | b2plot >& /dev/null
+fi
+
+### Calculate total outboard poloidal heat to the divertor
+
+HEAT=0.0
+TOTAL_HEAT=0.0
+for i in `seq $((NYCUT+3)) $((NY+3))`; do     # Skip to cells outside separatrix
+   HEAT=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`       # Read poloidal heat flow
+   HEAT=${HEAT/E+/*10^}
+   HEAT=${HEAT/E-/*10^-}   
+   NEW_TOTAL_HEAT=`echo "$TOTAL_HEAT + $HEAT" | bc -l`   # Add heat to sum
+   if [[ `echo "$(ABS $NEW_TOTAL_HEAT) < $(ABS $TOTAL_HEAT)" | bc -l` = 1 ]] ; then
+      echo "     WARNING: Poloidal heat flux changes direction at IY = $((i-3)) in the divertor entrance"
+      echo "              Check the radial profile of the poloidal heat flux for abnormalities."
+   else
+      TOTAL_HEAT=$NEW_TOTAL_HEAT
+   fi
+done
+
+### Find radial cell index at which integrated heat exceeds 63.2% (area under 1 decay width, 1-exp(-1)) of total heat to the divertor
+
+SUM_HEAT1=0.0
+SUM_HEAT2=0.0
+HEAT=0.0
+EFOLD_TEST=0
+for i in `seq $((NY+4+NYCUT+2)) $((NY+4+NY+2))`; do   # Skip to heat data written vs. cell index 
+
+   EFOLD_CELL=`awk -v var=$i 'NR==var{print $1}' $OUTFILE` # Record cell index at which heat is being added
+   EFOLD_CELL=${EFOLD_CELL%.*}                             # Change the cell index from real to integer
+   HEAT=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`       # Record heat to add to total
+   SUM_HEAT1=$SUM_HEAT2                          # Retain previous heat sum for interpolation later
+   SUM_HEAT2=`echo "$SUM_HEAT1 + $HEAT" | bc -l`    # Add new cell's poloidal heat to find new heat sum
+
+   EFOLD_TEST=`echo "$SUM_HEAT2 > 0.632*$TOTAL_HEAT" | bc -l`
+   [[ "$EFOLD_TEST" = 1 ]] && break            # If 63.2% of heat is accounted for, break loop
+done
+
+echo "fhtx jxa writ f.y" | b2plot >& /dev/null       # Obtain the corresponding cells at the outer midplane
+
+# Now read the radial cells upstream and find the bounding radial widths of the cell of 63.2% heat flow
+
+LAMBDA1=`awk -v var=$((EFOLD_CELL+2)) 'NR==var{print $1}' $OUTFILE`    # Radial bound 1
+LAMBDA1=${LAMBDA1/E+/*10^}                     # Change number format -- neither bash nor bc understand scientific notation!
+LAMBDA1=${LAMBDA1/E-/*10^-}
+
+LAMBDA2=`awk -v var=$((EFOLD_CELL+3)) 'NR==var{print $1}' $OUTFILE`    # Radial bound 2
+LAMBDA2=${LAMBDA2/E+/*10^}                     # Change number format -- neither bash nor bc understand scientific notation!
+LAMBDA2=${LAMBDA2/E-/*10^-}
+
+LAMBDA=`echo "((0.632*$TOTAL_HEAT - $SUM_HEAT1)*$LAMBDA2 + ($SUM_HEAT2 - 0.632*$TOTAL_HEAT)*$LAMBDA1)/$HEAT" | bc -l`     # Interpolate the SOL width
+
+echo "Outboard SOL power width (mm): " `echo "$LAMBDA * 1000.0" | bc` >> $ANALYSIS/$SUMMARY
+
+
+#############################################
+#####  OUTER MIDPLANE RADIAL PROFILES   #####
+#############################################
+
+echo "Calculating outboard midplane radial profiles ..."
+
+# Electron Density
+
+echo "ne 1.e19 rm/ jxa 0. fmin 0. fmax writ f.y" | b2plot >& /dev/null       # Plot the upstream radial density profile
+
+echo "Outer midplane separatrix electron density (@ cell center)" >> $ANALYSIS/ne_midplane-info.txt
+echo "Units: 10^19 m^-3" >> $ANALYSIS/ne_midplane-info.txt
+echo "IX = jxa" >> $ANALYSIS/ne_midplane-info.txt
+
+for i in `seq 2 $((NY+3))`; do      # Read and write radial profile
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/ne_midplane.txt
+done
+# mv $OUTPLOT $ANALYSIS/ne_midplane.ps
+
+NESEPM=`awk -v var=$((NYCUT+3)) 'NR==var{print $2}' $OUTFILE`
+echo "Outboard midplane edge density (10^19 m^-3): " $NESEPM >> $ANALYSIS/$SUMMARY
+echo "=====================================================" >> $ANALYSIS/$SUMMARY
+
+# Electron Temperature
+
+echo "te jxa writ f.y" | b2plot >& /dev/null
+
+echo "Outboard midplane Te (@ cell center) radial profile" >> $ANALYSIS/te_midplane-info.txt
+echo "Units: eV" >> $ANALYSIS/te_midplane-info.txt
+echo "IX = jxa" >> $ANALYSIS/te_midplane-info.txt
+
+for i in `seq 2 $((NY+3))`; do      # Read and write radial profile
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/te_midplane.txt
+done
+
+# Total Plasma Pressure
+
+echo "p* jxa writ f.y" | b2plot >& /dev/null
+
+echo "Outboard midplane total plasma pressure (@ cell center) radial profile" >> $ANALYSIS/ptot_midplane-info.txt
+echo "Units: Pa" >> $ANALYSIS/ptot_midplane-info.txt
+echo "IX = jxa" >> $ANALYSIS/ptot_midplane-info.txt
+
+for i in `seq 2 $((NY+3))`; do      # Read and write radial profile
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/ptot_midplane.txt
+done
+
+
+
+########################
+##### Z_EFFECTIVE  #####
+########################
+
+echo "Calculating Z_effective ..."
+# echo "zeff 1. 3. .2 clvd $FORMAT surf" | b2plot >& /dev/null
+# mv $OUTPLOT $ANALYSIS/zeff_surf.ps
+
+
+##############################
+##### CARBON IMPURITIES  #####
+##############################
+
+if [[ -n `grep "6  0  6" b2ar.dat 2> /dev/null` || -n `grep "6  0  6" ../baserun/b2ar.dat 2> /dev/null` ]]; then    # Check for carbon triple in b2ar.dat
+
+   echo "Calculating carbon impurity concentrations ..."
+
+   for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+   [[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+      # Target profile of carbon ion density
+
+      echo "na 3 8 sumz 1.e19 rm/ ${TARG_CELL[N]} 0. fmin 0. fmax writ f.y" | b2plot >& /dev/null
+
+      echo "Target carbon density (@ cell center)" >> $ANALYSIS/carbon_fy$N-info.txt
+      echo "Units: 10^19 m^-3" >> $ANALYSIS/carbon_fy$N-info.txt
+      echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/carbon_fy$N-info.txt
+
+      for i in `seq 2 $((NY+3))`; do      # Read and write radial profile
+         echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/carbon_fy$N.txt
+      done
+#      mv $OUTPLOT $ANALYSIS/carbon_fy$N.ps
+
+      # Poloidal profile of carbon ion radiation
+
+      echo "b2ra b2br m+ 3 8 sumz sumy 1.e6 rm/ $NYCUT writ f.x" | b2plot >& /dev/null
+
+      echo "Carbon radiation losses (@ cell center)" >> $ANALYSIS/power_carbonrad_fx$N-info.txt
+      echo "Units: MW" >> $ANALYSIS/power_carbonrad_fx$N-info.txt
+      echo "IY = $NYCUT" >> $ANALYSIS/power_carbonrad_fx$N-info.txt
+
+      for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+         echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/power_carbonrad_fx$N.txt
+      done
+
+      if [[ $N = 4 ]]; then    # added by Chen
+
+        for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+3))`; do       # longer poloidal profile upto the midplane
+           echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/power_carbonrad_fx$N-long.txt
+        done
+
+        # Poloidal profile of carbon density            added by Chen
+
+        echo "na 3 8 sumz 1.e19 rm/ $NYCUT writ f.x" | b2plot >& /dev/null
+
+        echo "Poloidal carbon density (@ cell center) outside separatrix" >> $ANALYSIS/carbon_fx$N-info.txt
+        echo "Units: 0^19 m^-3" >> $ANALYSIS/carbon_fx$N-info.txt
+        echo "IY = $NYCUT" >> $ANALYSIS/carbon_fx$N-info.txt
+
+        for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+           echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/carbon_fx$N.txt
+        done
+
+        for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+           echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/carbon_fx$N-long.txt
+        done
+
+      fi
+
+   done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+#   echo "na 3 8 sumz 1.e17 fmin 3 ndec logf $FORMAT surf" | b2plot >& /dev/null   # Carbon ion density contour plot
+#   mv $OUTPLOT $ANALYSIS/carbon_surf.ps
+
+#   echo "b2ra b2br m+ 3 8 sumz 1.e6 rm/ pvol $FORMAT surf" | b2plot >& /dev/null   # Carbon ion radiation contour plot
+#   mv $OUTPLOT $ANALYSIS/power_carbonrad_surf.ps
+
+fi
+
+
+##############################
+##### TARGET TE PROFILES #####
+##############################
+
+echo "Calculating target temperature profiles ..."
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+echo "te ${TARG_CELL[N]} 0. fmin 0. fmax writ f.y" | b2plot >& /dev/null    # Generate Te text file to determine maximum Te
+
+echo "Target electron temperature (@ cell center)" >> $ANALYSIS/te_fy$N-info.txt
+echo "Units: eV" >> $ANALYSIS/te_fy$N-info.txt
+echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/te_fy$N-info.txt
+
+for i in `seq 2 $((NY+3))`; do      # Read and write radial profile
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/te_fy$N.txt
+done
+#  mv $OUTPLOT $ANALYSIS/te_fy$N.ps
+
+PEAK=0.0
+for i in `seq 2 $((NY+3))`; do                              # Read lines of output file
+      BUFFER=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`   # Read the value in the line
+      BUFFER=${BUFFER/E+/*10^}
+      BUFFER=${BUFFER/E-/*10^-}
+      BUFFER=`echo "$BUFFER" | bc -l`     # Convert to real value
+      TEST=`echo "$BUFFER > $PEAK" | bc`                    # Test for new maximum
+      if [ "$TEST" = 1 ]
+      then
+         PEAK=$BUFFER            # Update peak
+      fi
+done
+
+TE_MAX=$PEAK                              # Set peak Te
+
+printf -v TE_MAX "%0.1f" $TE_MAX
+echo "Peak Te (eV) - Target $N: " $TE_MAX >> $ANALYSIS/$SUMMARY
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+###################################
+##### TARGET DENSITY PROFILES #####
+###################################
+
+echo "Calculating target density profiles ..."
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+echo "ne 1.e19 rm/ ${TARG_CELL[N]} 0. fmin 0. fmax writ f.y" | b2plot >& /dev/null    # Generate Ne text file to determine maximum Ne
+
+echo "Target electron density (@ cell center)" >> $ANALYSIS/ne_fy$N-info.txt
+echo "Units: 10^19 m^-3" >> $ANALYSIS/ne_fy$N-info.txt
+echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/ne_fy$N-info.txt
+
+for i in `seq 2 $((NY+3))`; do      # Read and write radial profile
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/ne_fy$N.txt
+done
+#  mv $OUTPLOT $ANALYSIS/ne_fy$N.ps
+
+PEAK=0.0
+for i in `seq 2 $((NY+3))`; do                              # Read lines of output file
+      BUFFER=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`   # Read the value in the line
+      BUFFER=${BUFFER/E+/*10^}
+      BUFFER=${BUFFER/E-/*10^-}
+      BUFFER=`echo "$BUFFER" | bc -l`    # Convert to a real value
+      TEST=`echo "$BUFFER > $PEAK" | bc`                    # Test for new maximum
+      if [ "$TEST" = 1 ]
+      then
+         PEAK=$BUFFER            # Update peak
+      fi
+done
+
+NE_MAX=$PEAK                             # Set peak Ne
+
+printf -v NE_MAX "%0.2f" $NE_MAX
+echo "Peak Ne (10^19 m^-3) - Target $N: " $NE_MAX >> $ANALYSIS/$SUMMARY
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+###########################################
+##### TARGET NEUTRAL DENSITY PROFILES #####
+###########################################
+
+echo "Calculating target neutral density profiles ..."
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+echo "dab2 0 zsel 1.e19 rm/ ${TARG_CELL[N]} 0. fmin 0. fmax writ f.y" | b2plot >& /dev/null    # atomic hydrogen density
+
+   echo "Target atomic neutral density (@ cell center)" >> $ANALYSIS/neutD_fy$N-info.txt
+   echo "Units: 10^19 D atoms/m^3" >> $ANALYSIS/neutD_fy$N-info.txt
+   echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/neutD_fy$N-info.txt
+
+   for i in `seq 2 $((NY+3))`; do      # Read and write radial profile
+      echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/neutD_fy$N.txt
+   done
+#   mv $OUTPLOT $ANALYSIS/neutD_fy$N.ps
+
+echo "dmb2 0 zsel 1.e19 rm/ ${TARG_CELL[N]} 0. fmin 0. fmax writ f.y" | b2plot >& /dev/null    # molecular hydrogen density
+
+   echo "Target molecular neutral density (@ cell center)" >> $ANALYSIS/neutD2_fy$N-info.txt
+   echo "Units: 10^19 D2 molecules/m^3" >> $ANALYSIS/neutD2_fy$N-info.txt
+   echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/neutD2_fy$N-info.txt
+
+   for i in `seq 2 $((NY+3))`; do      # Read and write radial profile
+      echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/neutD2_fy$N.txt
+   done
+#   mv $OUTPLOT $ANALYSIS/neutD2_fy$N.ps
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+####################################
+##### TARGET PRESSURE PROFILES #####
+####################################
+
+echo "Calculating target pressure profiles ..."
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+echo "p* ${TARG_CELL[N]} 0. fmin 0. fmax writ f.y" | b2plot >& /dev/null    # Generate text file to determine peak pressure
+
+echo "Target total electron pressure (@ cell center)" >> $ANALYSIS/ptot_fy$N-info.txt
+echo "Units: Pa" >> $ANALYSIS/ptot_fy$N-info.txt
+echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/ptot_fy$N-info.txt
+
+for i in `seq 2 $((NY+3))`; do      # Read and write radial profile
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/ptot_fy$N.txt
+done
+#  mv $OUTPLOT $ANALYSIS/ptot_fy$N.ps
+
+PEAK=0.0
+for i in `seq 2 $((NY+3))`; do                              # Read lines of output file
+      BUFFER=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`   # Read the value in the line
+      BUFFER=${BUFFER/E+/*10^}
+      BUFFER=${BUFFER/E-/*10^-}
+      BUFFER=`echo "$BUFFER" | bc -l`    # Convert to a real value
+      TEST=`echo "$BUFFER > $PEAK" | bc`                    # Test for new maximum
+      if [ "$TEST" = 1 ]
+      then
+         PEAK=$BUFFER            # Update peak
+      fi
+done
+
+PTOT_MAX=$PEAK                           # Set peak pressure
+
+printf -v PTOT_MAX "%0.2f" $PTOT_MAX
+echo "Peak total pressure (Pa) - Target $N: " $PTOT_MAX >> $ANALYSIS/$SUMMARY
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+#################################################################################
+##### TARGET FLUX TUBE, Q_PERP, J_PERP, J_PARALLEL, AND Q_PARALLEL PROFILES #####
+#################################################################################
+
+echo "Calculating flux tube features, heat, and ion flux intensities at targets ..."
+
+# Q_parallel = Q_perp/sin(theta) = P/A_parallel      -- parallel heat flux at left cell face
+# J_parallel = J_perp/sin(theta) = G/A_parallel      -- parallel ion flux at left cell face
+# sin(theta) = (bx/bb)*qc ~ (bx/bb)*(sxperp/sx)      -- angle between B and left cell face
+# A_parallel = sx*(bx/bb)*qc ~ sxperp*(bx/bb)        -- area of 3D flux tube at left cell face
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+### Calculate Q_perp (MW/m2)
+
+echo "fhtx psx 1.e6 rm/ ${FLUX_TARG_CELL[N]} 0. fmin 0. fmax writ f.y" | b2plot >& /dev/null 
+
+for i in `seq 2 $((NY+3))`; do
+   DY[$((i-1))]=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`      # Assign the 1st value in the line to the target location
+   DY[$((i-1))]=${DY[i-1]/E+/*10^}
+   DY[$((i-1))]=${DY[i-1]/E-/*10^-}
+   DY[$((i-1))]=`echo "${DY[i-1]}" | bc -l`    # Convert to a real value
+
+   QPERP[$((i-1))]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`   # Assign the value in the line to the data array
+   QPERP[$((i-1))]=${QPERP[i-1]/E+/*10^}
+   QPERP[$((i-1))]=${QPERP[i-1]/E-/*10^-}
+   QPERP[$((i-1))]=`echo "${QPERP[i-1]}" | bc -l`      # Convert to a real value
+done
+
+#  mv $OUTPLOT $ANALYSIS/qperp_fy$N.ps
+
+### Calculate J_perp (A/cm2)
+
+echo "fnax 0 0 sumz psx qe rm* 1.e4 rm/ ${FLUX_TARG_CELL[N]} 0. fmin 0. fmax writ f.y" | b2plot >& /dev/null
+
+for i in `seq 2 $((NY+3))`; do
+   JPERP[$((i-1))]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`   # Assign the value in the line to the data array
+   JPERP[$((i-1))]=${JPERP[i-1]/E+/*10^}
+   JPERP[$((i-1))]=${JPERP[i-1]/E-/*10^-}
+   JPERP[$((i-1))]=`echo "${JPERP[i-1]}" | bc -l`     # Convert to a real value
+done
+
+#  mv $OUTPLOT $ANALYSIS/jperp_fy$N.ps
+
+### Calculate sin(theta)  
+
+echo "qc bx bb m/ m* ${FLUX_TARG_CELL[N]} writ f.y" | b2plot >& /dev/null
+
+for i in `seq 2 $((NY+3))`; do
+   SIN_THETA[$((i-1))]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`      # Assign the value in the line to the data array
+   SIN_THETA[$((i-1))]=${SIN_THETA[i-1]/E+/*10^}
+   SIN_THETA[$((i-1))]=${SIN_THETA[i-1]/E-/*10^-}
+   SIN_THETA[$((i-1))]=`echo "${SIN_THETA[i-1]}" | bc -l`           # Convert to a real value
+done
+
+### Calculate A_parallel (m2)
+
+echo "sx qc m* bx bb m/ m* abs ${FLUX_TARG_CELL[N]} writ f.y" | b2plot >& /dev/null
+
+for i in `seq 2 $((NY+3))`; do
+   APARA[$((i-1))]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`      # Assign the value in the line to the data array
+   APARA[$((i-1))]=${APARA[i-1]/E+/*10^}
+   APARA[$((i-1))]=${APARA[i-1]/E-/*10^-}
+   APARA[$((i-1))]=`echo "${APARA[i-1]}" | bc -l`                   # Convert to a real value
+done
+
+### Calculate Q_parallel (MW/m2)
+
+echo "fhtx psx qc m/ bb bx m/ m* 1.e6 rm/ ${FLUX_TARG_CELL[N]} writ f.y" | b2plot >& /dev/null
+
+for i in `seq 2 $((NY+3))`; do
+   QPARA[$((i-1))]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`      # Assign the value in the line to the data array
+   QPARA[$((i-1))]=${QPARA[i-1]/E+/*10^}
+   QPARA[$((i-1))]=${QPARA[i-1]/E-/*10^-}
+   QPARA[$((i-1))]=`echo "${QPARA[i-1]}" | bc -l`                   # Convert to a real value
+done
+
+### Calculate J_parallel (A/cm2)
+
+echo "fnax 0 0 sumz psx qc m/ bb bx m/ m* qe rm* 1.e4 rm/ ${FLUX_TARG_CELL[N]} writ f.y" | b2plot >& /dev/null
+
+for i in `seq 2 $((NY+3))`; do
+   JPARA[$((i-1))]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`      # Assign the value in the line to the data array
+   JPARA[$((i-1))]=${JPARA[i-1]/E+/*10^}
+   JPARA[$((i-1))]=${JPARA[i-1]/E-/*10^-}
+   JPARA[$((i-1))]=`echo "${JPARA[i-1]}" | bc -l`                   # Convert to a real value
+done
+
+### Write arrays to file
+
+echo "Target field angle sin(theta) (@ cell face)" >> $ANALYSIS/Bsin_fy$N.txt
+echo "Target flux tube area (@ cell face)" >> $ANALYSIS/Apara_fy$N.txt
+echo "Target heat flux (@ cell face)" >> $ANALYSIS/qperp_fy$N-info.txt
+echo "Target parallel heat flux (@ cell face)" >> $ANALYSIS/qpara_fy$N-info.txt
+echo "Target ion flux (@ cell face)" >> $ANALYSIS/jperp_fy$N-info.txt
+echo "Target parallel ion flux (@ cell face)" >> $ANALYSIS/jpara_fy$N-info.txt
+
+echo "Units: none" >> $ANALYSIS/Bsin_fy$N.txt
+echo "Units: m^2" >> $ANALYSIS/Apara_fy$N.txt
+echo "Units: MW/m^2" >> $ANALYSIS/qperp_fy$N-info.txt
+echo "Units: MW/m^2" >> $ANALYSIS/qpara_fy$N-info.txt
+echo "Units: A/cm^2" >> $ANALYSIS/jperp_fy$N-info.txt
+echo "Units: A/cm^2" >> $ANALYSIS/jpara_fy$N-info.txt
+
+echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/Bsin_fy$N.txt
+echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/Apara_fy$N.txt
+echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/qperp_fy$N-info.txt
+echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/qpara_fy$N-info.txt
+echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/jperp_fy$N-info.txt
+echo "IX = ${TARG_CELL[N]}" >> $ANALYSIS/jpara_fy$N-info.txt
+
+for i in `seq 1 $((NY+2))`; do
+   echo "${DY[i]} ${SIN_THETA[i]}" >> $ANALYSIS/Bsin_fy$N.txt
+   echo "${DY[i]} ${APARA[i]}" >> $ANALYSIS/Apara_fy$N.txt
+   echo "${DY[i]} ${QPERP[i]}" >> $ANALYSIS/qperp_fy$N.txt
+   echo "${DY[i]} ${QPARA[i]}" >> $ANALYSIS/qpara_fy$N.txt
+   echo "${DY[i]} ${JPERP[i]}" >> $ANALYSIS/jperp_fy$N.txt
+   echo "${DY[i]} ${JPARA[i]}" >> $ANALYSIS/jpara_fy$N.txt
+done
+
+
+### Find profile maxima
+
+QPERP_MAX=0.0
+QPARA_MAX=0.0
+JPERP_MAX=0.0
+JPARA_MAX=0.0
+
+for i in `seq 1 $((NY+2))`; do
+   if [[ `echo "$(ABS ${QPERP[i]}) > $(ABS $QPERP_MAX)" | bc -l` = 1 ]]     # Find peak Q_perp
+   then
+      QPERP_MAX=${QPERP[i]}
+   fi
+
+   if [[ `echo "$(ABS ${QPARA[i]}) > $(ABS $QPARA_MAX)" | bc -l` = 1 ]]     # Find peak Q_paralel
+   then
+      QPARA_MAX=${QPARA[i]}
+   fi
+
+   if [[ `echo "$(ABS ${JPERP[i]}) > $(ABS $JPERP_MAX)" | bc -l` = 1 ]]     # Find peak J_perp
+   then
+      JPERP_MAX=${JPERP[i]}
+   fi
+
+   if [[ `echo "$(ABS ${JPARA[i]}) > $(ABS $JPARA_MAX)" | bc -l` = 1 ]]     # Find peak J_parallel
+   then
+      JPARA_MAX=${JPARA[i]}
+   fi
+done
+
+### Write peaks to file
+
+printf -v QPERP_MAX "%0.2f" $QPERP_MAX
+printf -v QPARA_MAX "%0.2f" $QPARA_MAX
+printf -v JPERP_MAX "%0.2f" $JPERP_MAX
+printf -v JPARA_MAX "%0.2f" $JPARA_MAX
+
+echo "Peak Q_perp (MW/m^2) - Target $N: " $QPERP_MAX >> $ANALYSIS/$SUMMARY
+echo "Peak Q_parallel (MW/m^2) - Target $N: " $QPARA_MAX >> $ANALYSIS/$SUMMARY
+echo "Peak J_perp (A/cm^2) - Target $N: " $JPERP_MAX >> $ANALYSIS/$SUMMARY
+echo "Peak J_parallel (A/cm^2) - Target $N: " $JPARA_MAX >> $ANALYSIS/$SUMMARY
+
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+###################################################################
+##### POLOIDAL HEAT PROFILES & DIVERTOR DISSIPATION FRACTIONS #####
+###################################################################
+
+echo "Calculating poloidal heat profiles & dissipation fractions ..."
+
+echo "hx $NYCUT writ f.x" | b2plot >& /dev/null     # Get cell lengths to translate from cell centers to cell faces
+
+   for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+   [[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+   for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+      HX[$i]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`
+      HX[$i]=${HX[i]/E+/*10^}; HX[$i]=${HX[i]/E-/*10^-}
+   done
+
+   done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+echo "fhtx sumy 1.e6 rm/ $NYCUT writ f.x" | b2plot >& /dev/null   # Calculate poloidal profile of total heat
+
+   for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+   [[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+   echo "Total integrated heat (@ cell faces), poloidal profile summed over radially" >> $ANALYSIS/heat_fx$N-info.txt
+   echo "Units: MW" >> $ANALYSIS/heat_fx$N-info.txt
+   echo "IY = $NYCUT" >> $ANALYSIS/heat_fx$N-info.txt
+
+   for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+      DX[$i]=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`
+      DX[$i]=${DX[i]/E+/*10^}; DX[$i]=${DX[i]/E-/*10^-}
+      FLUXDX[$i]=`echo "${DX[i]} - ${HX[i]}/2.0" | bc -l`
+
+      echo ${FLUXDX[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/heat_fx$N.txt
+   done
+
+   HEAT_UP=`awk -v var=$((FLUX_XPT_CELL[N]+3)) 'NR==var{print $2}' $OUTFILE`   # Read value for divertor entrance
+   HEAT_UP=${HEAT_UP/E+/*10^}
+   HEAT_UP=${HEAT_UP/E-/*10^-}
+   HEAT_UP=`echo "$HEAT_UP" | bc -l`     # Convert to real value
+
+   HEAT_DOWN=`awk -v var=$((FLUX_TARG_CELL[N]+3)) 'NR==var{print $2}' $OUTFILE`   # Read value for divertor target
+   HEAT_DOWN=${HEAT_DOWN/E+/*10^}
+   HEAT_DOWN=${HEAT_DOWN/E-/*10^-}
+   HEAT_DOWN=`echo "$HEAT_DOWN" | bc -l`     # Convert to real value
+
+   RAD_FRAC=`echo "($HEAT_UP - $HEAT_DOWN)/$HEAT_UP*100.0" | bc -l`
+
+   printf -v HEAT_UP "%0.2f" $HEAT_UP
+   printf -v HEAT_DOWN "%0.2f" $HEAT_DOWN
+   printf -v RAD_FRAC "%0.1f" $RAD_FRAC
+
+   echo "Power in divertor (MW) - Target $N: " $HEAT_UP >> $ANALYSIS/$SUMMARY
+   echo "Power at target (MW) - Target $N: " $HEAT_DOWN >> $ANALYSIS/$SUMMARY
+   echo "Dissipation fraction % - Target $N: " $RAD_FRAC >> $ANALYSIS/$SUMMARY
+
+   done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+#################################
+##### POLOIDAL D+ ION FLOWS #####
+#################################
+
+echo "Calculating poloidal profiles of D+ flux, flow plots, and trajectory plots ..."
+
+echo "hx $NYCUT writ f.x" | b2plot >& /dev/null     # Get cell lengths to translate from cell centers to cell faces
+
+   for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+   [[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+   for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+      HX[$i]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`
+      HX[$i]=${HX[i]/E+/*10^}; HX[$i]=${HX[i]/E-/*10^-}
+   done
+
+   done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+echo "fnax ismain zsel sumy 1.e21 rm/ $NYCUT writ f.x" | b2plot >& /dev/null      # Generate poloidal profile of total main ion flux
+
+   for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+   [[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+   echo "Total integrated main ion flow (@ cell faces), poloidal profile summed radially" >> $ANALYSIS/ion_flow_fx$N-info.txt
+   echo "Units: 10^21 D+/s" >> $ANALYSIS/ion_flow_fx$N-info.txt
+   echo "IY = $NYCUT" >> $ANALYSIS/ion_flow_fx$N-info.txt
+
+   for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+      DX[$i]=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`
+      DX[$i]=${DX[i]/E+/*10^}; DX[$i]=${DX[i]/E-/*10^-}
+      FLUXDX[$i]=`echo "${DX[i]} - ${HX[i]}/2.0" | bc -l`
+
+      echo ${FLUXDX[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/ion_flow_fx$N.txt
+   done
+
+   PFLUX=`awk -v var=$((FLUX_TARG_CELL[N]+3)) 'NR==var{print $2}' $OUTFILE`   # Read the value at the target
+   PFLUX=`echo "${PFLUX/E+/*10^}" | bc -l`
+   PFLUX=`echo "${PFLUX/E-/*10^-}" | bc -l`
+   printf -v PFLUX "%0.2f" $PFLUX
+   echo "Total D+ flux (10^21 D+/s) - Target $N: " $PFLUX >> $ANALYSIS/$SUMMARY
+
+   done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+### Contour plots of main ion flows and trajectories
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+# echo "ua ismain zsel uuse vv ismain zsel vvse $FORMAT 1000 t_#p 1.e-2 t_pt ${XPT_CELL[N]} $NYCUT ${XPT_CELL[N]} $NX 300 0 ismain 1 traj" | b2plot >& /dev/null     # Generate contour plot of main ion trajectories
+# mv b2plot.ps $ANALYSIS/ion_traj$N.ps
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+# echo "fnax ismain zsel psxperp $FORMAT surf" | b2plot >& /dev/null    # Generate contour plot of main ion flow
+# mv $OUTPLOT $ANALYSIS/ion_flow_surf.ps
+
+
+######################################################
+##### POLOIDAL PROFILES OF D+ IONIZATION SOURCES #####
+######################################################
+
+echo "Calculating poloidal profiles of D+ ionization sources ..."
+
+echo "brna ismain zsel sumy 1.e21 rm/ $NYCUT writ f.x" | b2plot >& /dev/null      # Calculate total flux at divertor target
+
+   for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+   [[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+   echo "Total integrated ionization source (@ cell centers), poloidal profile summed radially" >> $ANALYSIS/ion_source_fx$N-info.txt
+   echo "Units: 10^21 D+/s" >> $ANALYSIS/ion_source_fx$N-info.txt
+   echo "IY = $NYCUT" >> $ANALYSIS/ion_source_fx$N-info.txt
+
+   for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+      echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/ion_source_fx$N.txt
+   done
+
+   PSOURCE=`awk -v var=$((TARG_CELL[N]+3)) 'NR==var{print $2}' $OUTFILE`   # Read the value at the target
+   PSOURCE=`echo "${PSOURCE/E+/*10^}" | bc -l`
+   PSOURCE=`echo "${PSOURCE/E-/*10^-}" | bc -l`
+   printf -v PSOURCE "%0.5f" $PSOURCE
+   echo "Total D+ ionization source (10^21 D+/s) - Target $N: " $PSOURCE >> $ANALYSIS/$SUMMARY
+
+   done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+# echo "brna ismain zsel pvol $FORMAT 3 ndec logf surf" | b2plot >& /dev/null    # Generate contour plot
+# mv $OUTPLOT $ANALYSIS/ion_source_surf.ps
+
+
+###########################################################################################
+##### POLOIDAL PRESSURE, NEUTRAL DENSITY, CONNECTION LENGTH, AND J_PARALLEL PROFILES  #####
+###########################################################################################
+
+echo "Calculating poloidal pressure, neutral, L, and J_parallel profiles ..."
+
+# J_parallel = J_perp/sin(theta) = G/A_parallel      -- parallel ion flux at left cell face
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+  [[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+  echo "p* $((XPT_CELL[N]+3)) writ f.y" | b2plot >& /dev/null  # Determine the radial cell where the upstream peak total pressure exists
+
+  PEAK=0.0
+  for i in `seq $((NY+5)) $((NY+NY+6))`; do                   # Read lines of output file
+        BUFFER1=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`   # Read the cell in the line
+        BUFFER2=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`   # Read the value in the line
+        BUFFER2=${BUFFER2/E+/*10^}
+        BUFFER2=${BUFFER2/E-/*10^-}
+        BUFFER2=`echo "$BUFFER2" | bc -l`     # Convert to real value
+
+        TEST=`echo "$BUFFER2 > $PEAK" | bc`                    # Test for new maximum
+        if [ "$TEST" = 1 ]
+        then
+           PEAK=$BUFFER2            # Update peak
+           PEAK_CELL=$BUFFER1       # Update radial cell of peak
+           PEAK_CELL=${PEAK_CELL%.*}                  # Convert radial cell to integer
+        fi
+  done
+
+##### total pr
+
+  echo "p* $PEAK_CELL writ f.x" | b2plot >& /dev/null   # Plot poloidal (total) pressure along peak radial cell
+
+  echo "Poloidal profile of total pressure (@ cell center)" >> $ANALYSIS/ptot_fx$N-info.txt
+  echo "Units: Pa" >> $ANALYSIS/ptot_fx$N-info.txt
+  echo "IY = " $PEAK_CELL >> $ANALYSIS/ptot_fx$N-info.txt
+
+  for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do
+     echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/ptot_fx$N.txt
+  done
+
+  if [[ $N = 4 ]]; then    # added by Chen
+    for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+3))`; do
+       echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/ptot_fx$N-long.txt
+    done
+  fi
+
+##### static pr
+
+  echo "pr $PEAK_CELL writ f.x" | b2plot >& /dev/null   # Plot poloidal (static) pressure along peak radial cell
+
+  echo "Poloidal profile of static pressure (@ cell center)" >> $ANALYSIS/pr_fx$N-info.txt
+  echo "Units: Pa" >> $ANALYSIS/pr_fx$N-info.txt
+  echo "IY = " $PEAK_CELL >> $ANALYSIS/pr_fx$N-info.txt
+
+  for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do
+     echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/pr_fx$N.txt
+  done
+
+  if [[ $N = 4 ]]; then    # added by Chen
+    for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+3))`; do
+       echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/pr_fx$N-long.txt
+    done
+  fi
+
+##### dynamic pr
+
+  echo "p* pr m- $PEAK_CELL writ f.x" | b2plot >& /dev/null   # Plot poloidal (dynamic) pressure along peak radial cell
+
+  echo "Poloidal profile of dynamic pressure (@ cell center)" >> $ANALYSIS/pdyn_fx$N-info.txt
+  echo "Units: Pa" >> $ANALYSIS/pdyn_fx$N-info.txt
+  echo "IY = " $PEAK_CELL >> $ANALYSIS/pdyn_fx$N-info.txt
+
+  for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do
+     echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/pdyn_fx$N.txt
+  done
+
+  if [[ $N = 4 ]]; then    # added by Chen
+    for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+3))`; do
+       echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/pdyn_fx$N-long.txt
+    done
+  fi
+
+##### atomic hydrogen density
+
+  echo "dab2 ismain zsel 1.e19 rm/ $PEAK_CELL writ f.x" | b2plot >& /dev/null   # Plot poloidal atomic density along peak radial cell
+
+  echo "Poloidal profile of atomic neutral density (@ cell center)" >> $ANALYSIS/neutD_fx$N-info.txt
+  echo "Units: 10^19 D atoms/m^3" >> $ANALYSIS/neutD_fx$N-info.txt
+  echo "IY = " $PEAK_CELL >> $ANALYSIS/neutD_fx$N-info.txt
+
+  for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do
+     echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/neutD_fx$N.txt
+  done
+
+  if [[ $N = 4 ]]; then    # added by Chen
+    for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+3))`; do
+       echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/neutD_fx$N-long.txt
+    done
+  fi
+
+##### molecular hydrogen neutral density
+
+  echo "dmb2 ismain zsel 1.e19 rm/ $PEAK_CELL writ f.x" | b2plot >& /dev/null   # Plot poloidal molecular density along peak radial cell
+
+  echo "Poloidal profile of molecular neutral density (@ cell center)" >> $ANALYSIS/neutD2_fx$N-info.txt
+  echo "Units: 10^19 D2 molecules/m^3" >> $ANALYSIS/neutD2_fx$N-info.txt
+  echo "IY = " $PEAK_CELL >> $ANALYSIS/neutD2_fx$N-info.txt
+
+  for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do
+     echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/neutD2_fx$N.txt
+  done
+
+  if [[ $N = 4 ]]; then    # added by Chen
+    for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+3))`; do
+       echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/neutD2_fx$N-long.txt
+    done
+  fi
+
+##### connection length
+
+  echo "conn $PEAK_CELL writ f.x" | b2plot >& /dev/null   # Plot connection length along peak radial cell
+
+  echo "Poloical profile of connection length (@ cell center)" >> $ANALYSIS/conn_fx$N-info.txt
+  echo "Units: m" >> $ANALYSIS/conn_fx$N-info.txt
+  echo "IY = " $PEAK_CELL >> $ANALYSIS/conn_fx$N-info.txt
+
+  for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do
+     echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/conn_fx$N.txt
+  done
+
+  if [[ $N = 4 ]]; then    # added by Chen
+    for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+3))`; do
+       echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/conn_fx$N-long.txt
+    done
+  fi
+
+##### J_parallel
+
+  echo "hx $PEAK_CELL writ f.x" | b2plot >& /dev/null     # Get cell lengths to translate from cell centers to cell faces
+
+     for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+        HX[$i]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`
+        HX[$i]=${HX[i]/E+/*10^}; HX[$i]=${HX[i]/E-/*10^-}
+     done
+
+     if  [[ $N = 4 ]]; then    # added by Chen
+       for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+          HX_long[$i]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`
+          HX_long[$i]=${HX_long[i]/E+/*10^}; HX_long[$i]=${HX_long[i]/E-/*10^-}
+       done
+     fi
+
+  echo "fnax 0 0 sumz psx qc m/ bb bx m/ m* qe rm* 1.e4 rm/ $PEAK_CELL writ f.x" | b2plot >& /dev/null
+
+     echo "Poloidal profile of Parallel ion flux (@ cell face)" >> $ANALYSIS/jpara_fx$N-info.txt
+     echo "Units: A/cm^2" >> $ANALYSIS/jpara_fx$N-info.txt
+     echo "IY = " $PEAK_CELL >> $ANALYSIS/jpara_fx$N-info.txt
+
+     for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do
+        DX[$i]=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`
+        DX[$i]=${DX[i]/E+/*10^}; DX[$i]=${DX[i]/E-/*10^-}
+        FLUXDX[$i]=`echo "${DX[i]} - ${HX[i]}/2.0" | bc -l`
+
+        echo ${FLUXDX[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/jpara_fx$N.txt
+     done
+
+     if [[ $N = 4 ]]; then    # added by Chen
+       for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do
+          DX_long[$i]=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`
+          DX_long[$i]=${DX_long[i]/E+/*10^}; DX_long[$i]=${DX_long[i]/E-/*10^-}
+          FLUXDX_long[$i]=`echo "${DX_long[i]} - ${HX_long[i]}/2.0" | bc -l`
+
+          echo ${FLUXDX_long[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/jpara_fx$N-long.txt
+       done
+     fi
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+# echo "dab2 0 zsel 10 1.e18 3.e18 7.e18 1.e19 3.e19 7.e19 1.e20 3.e20 7.e20 1.e21 clvs $FORMAT surf" | b2plot >& /dev/null  # Contour plot of atomic hydrogen
+# mv $OUTPLOT $ANALYSIS/neutD_surf.ps
+
+# echo "dmb2 0 zsel 10 1.e18 3.e18 7.e18 1.e19 3.e19 7.e19 1.e20 3.e20 7.e20 1.e21 clvs $FORMAT surf" | b2plot >& /dev/null  # Contour plot of molecular hydrogen
+# mv $OUTPLOT $ANALYSIS/neutD2_surf.ps
+
+
+##########################################
+##### POLOIDAL TEMPERATURE PROFILES  #####
+##########################################
+
+echo "Calculating poloidal temperature profiles ..."
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+echo "te $((XPT_CELL[N]+3)) writ f.y" | b2plot >& /dev/null  # Determine the radial cell where the upstream peak temperature exists
+
+PEAK=0.0
+for i in `seq $((NY+5)) $((NY+NY+6))`; do                   # Read lines of output file
+      BUFFER1=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`   # Read the cell in the line
+      BUFFER2=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`   # Read the value in the line
+      BUFFER2=${BUFFER2/E+/*10^}
+      BUFFER2=${BUFFER2/E-/*10^-}
+      BUFFER2=`echo "$BUFFER2" | bc -l`     # Convert to real value
+
+      TEST=`echo "$BUFFER2 > $PEAK" | bc`                    # Test for new maximum
+      if [ "$TEST" = 1 ]
+      then
+         PEAK=$BUFFER2            # Update peak
+         PEAK_CELL=$BUFFER1       # Update radial cell of peak
+         PEAK_CELL=${PEAK_CELL%.*}                  # Convert radial cell to integer
+      fi
+done
+
+echo "te $PEAK_CELL writ f.x" | b2plot >& /dev/null   # Plot poloidal Te along peak radial cell
+
+echo "Poloical profile of Electron temperature (@ cell center)" >> $ANALYSIS/te_fx$N-info.txt
+echo "Units: eV" >> $ANALYSIS/te_fx$N-info.txt
+echo "IY = " $PEAK_CELL >> $ANALYSIS/te_fx$N-info.txt
+
+for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do       # Write data to file
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/te_fx$N.txt
+done
+
+if [[ $N = 4 ]]; then    # added by Chen
+  for i in `seq $((MIDPLANE_OUT+3)) $(INC) $((TARG_CELL[N]+3))`; do       # Write data to file
+     echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/te_fx$N-long.txt
+  done
+fi
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+# echo "te 0. 50. 5. clvd $FORMAT surf" | b2plot >& /dev/null    # Contour plot
+# mv $OUTPLOT $ANALYSIS/te_surf.ps
+
+
+###############################################
+##### POLOIDAL PLASMA POWER LOSS PROFILES #####
+###############################################
+
+echo "Calculating poloidal plasma power loss profiles ..."
+
+# B2PLOT EXPRESSIONS FOR PLASMA POWER LOSS TERMS WITH B2PLOT SIGN CONVENTIONS
+# Electron power loss(-)/gain(+) from all neutral interaction -- brhe
+# Particle potential power regained (+) from ionization -- brna 0.0 rmma pot m* 0 0 sumz ev rm*
+# Ion power loss(-)/gain(+) from all neutral interaction -- brhi
+# Total species line radiation loss (+) -- b2ra 0 0 sumz
+# Total species Bremsstrahlung radiation loss (+) -- b2br 0 0 sumz
+
+# CURRENT UNDERSTANDING OF NET POSITIVE LOSSES IN TERMS OF B2PLOT EXPRESSIONS
+# Assumptions: Neutral excitation from ions is weak
+#              All energy given to neutrals by electrons is radiated
+# Neutral-radiated power (+) = -1*e-neutral rxn loss - ionization energy gain (>= 0)
+# Total radiated power (+) = linerad + Bremsstrahlung + neutrad
+# Total plasma power loss (+) = -1*ion-neutral rxn loss + linerad + Bremsstrahlung + neutrad
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+# Calculate poloidal profile of recombination/ionization power loss(+)/gain(-) only
+
+echo "brna pot m* 0 0 sumz ev rm* -1.e-6 rm* sumy $NYCUT writ f.x" | b2plot >& /dev/null
+
+echo "Recombination/ionization losses (@ cell center)" >> $ANALYSIS/power_reco_fx$N.txt
+echo "Units: MW" >> $ANALYSIS/power_reco_fx$N.txt
+echo "IY = $NYCUT" >> $ANALYSIS/power_reco_fx$N.txt
+
+for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/power_reco_fx$N.txt
+done
+
+# Calculate poloidal profile of net electron-neutral rxn power loss(+)/gain(-) only
+
+echo "brhe brna 0.0 rmma pot m* 0 0 sumz ev rm* m+ -1.e-6 rm* sumy $NYCUT writ f.x" | b2plot >& /dev/null
+
+echo "Electron-eutral interaction losses (@ cell center)" >> $ANALYSIS/power_eneut_fx$N.txt
+echo "Units: MW" >> $ANALYSIS/power_eneut_fx$N.txt
+echo "IY = $NYCUT" >> $ANALYSIS/power_eneut_fx$N.txt
+
+for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/power_eneut_fx$N.txt
+done
+
+# Calculate poloidal profile of net ion-neutral rxn power loss(+)/gain(-) only
+
+echo "brhi -1.e-6 rm* sumy $NYCUT writ f.x" | b2plot >& /dev/null
+
+echo "Ion-neutral interaction losses (@ cell center)" >> $ANALYSIS/power_ineut_fx$N.txt
+echo "Units: MW" >> $ANALYSIS/power_ineut_fx$N.txt
+echo "IY = $NYCUT" >> $ANALYSIS/power_ineut_fx$N.txt
+
+for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/power_ineut_fx$N.txt
+done
+
+# Calculate poloidal profile of line radiation power loss only
+
+echo "b2ra 0 0 sumz sumy 1.e-6 rm* $NYCUT writ f.x" | b2plot >& /dev/null
+
+echo "Line radiation losses (@ cell center)" >> $ANALYSIS/power_linerad_fx$N.txt
+echo "Units: MW" >> $ANALYSIS/power_linerad_fx$N.txt
+echo "IY = $NYCUT" >> $ANALYSIS/power_linerad_fx$N.txt
+
+for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/power_linerad_fx$N.txt
+done
+
+# Calculate poloidal profile of Bremsstrahlung radiation power loss only
+
+echo "b2br 0 0 sumz sumy 1.e-6 rm* $NYCUT writ f.x" | b2plot >& /dev/null
+
+echo "Bremsstrahlung losses (@ cell center)" >> $ANALYSIS/power_bremrad_fx$N.txt
+echo "Units: MW" >> $ANALYSIS/power_bremrad_fx$N.txt
+echo "IY = $NYCUT" >> $ANALYSIS/power_bremrad_fx$N.txt
+
+for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/power_bremrad_fx$N.txt
+done
+
+# Calculate poloidal profile of total plasma power loss
+
+echo "b2ra b2br m+ 0 0 sumz brhe m- brna 0.0 rmma pot m* 0 0 sumz ev rm* m- brhi m- sumy 1.e-6 rm* $NYCUT writ f.x" | b2plot >& /dev/null
+
+echo "Total power loss (@ cell center)" >> $ANALYSIS/powerloss_fx$N.txt
+echo "Units: MW" >> $ANALYSIS/powerloss_fx$N.txt
+echo "IY = $NYCUT" >> $ANALYSIS/powerloss_fx$N.txt
+
+for i in `seq $((XPT_CELL[N]+3)) $(INC) $((TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo `awk -v var=$i 'NR==var{print $1}' $OUTFILE` `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/powerloss_fx$N.txt
+done
+
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+# Generate contour plots
+
+# echo "brhi -1.e-6 rm* pvol $FORMAT surf" | b2plot >& /dev/null
+# mv $OUTPLOT $ANALYSIS/power_ineut_surf.ps
+
+# echo "b2ra 0 0 sumz 1.e-6 rm* pvol $FORMAT surf" | b2plot >& /dev/null
+# mv $OUTPLOT $ANALYSIS/power_linerad_surf.ps
+
+# echo "b2br 0 0 sumz 1.e-6 rm* pvol $FORMAT surf" | b2plot >& /dev/null
+# mv $OUTPLOT $ANALYSIS/power_bremrad_surf.ps
+
+# echo "brhe brna 0.0 rmma pot m* 0 0 sumz ev rm* m+ -1.e-6 rm* pvol $FORMAT surf" | b2plot >& /dev/null
+# mv $OUTPLOT $ANALYSIS/power_neutrad_surf.ps
+
+# echo "brna pot m* 0 0 sumz ev rm* -1.e-6 rm* pvol $FORMAT surf" | b2plot >& /dev/null
+# mv $OUTPLOT $ANALYSIS/power_reco_surf.ps
+
+# echo "b2ra b2br m+ 0 0 sumz brhe m- brna 0.0 rmma pot m* 0 0 sumz ev rm* m- 1.e-6 rm* pvol $FORMAT 1.e3 fmax surf" | b2plot >& /dev/null
+# mv $OUTPLOT $ANALYSIS/power_bolometer_surf.ps
+
+# echo "b2ra b2br m+ 0 0 sumz brhe m- brna 0.0 rmma pot m* 0 0 sumz ev rm* m- brhi m- 1.e-6 rm* pvol $FORMAT 1.e3 fmax surf" | b2plot >& /dev/null
+# mv $OUTPLOT $ANALYSIS/powerloss_surf.ps
+
+
+######################################################
+##### POLOIDAL FLUX TUBE AND Q_PARALLEL PROFILES #####
+######################################################
+
+echo "Calculating poloidal profiles of flux tube features and Q_parallel ..."
+
+# Q_parallel = Q_perp/sin(theta) = P/A_parallel      -- parallel heat flux at left cell face
+# sin(theta) = (bx/bb)*qc ~ (bx/bb)*(sxperp/sx)      -- angle between B and left cell face
+# A_parallel = sx*(bx/bb)*qc ~ sxperp*(bx/bb)        -- area of 3D flux tube at left cell face
+
+for N in `seq 1 4`; do   ### BEGIN LOOP THROUGH DIVERTOR LEGS ###
+[[ "$NCUT" = 2 && ("$N" = 2 || "$N" = 3) ]] && continue    # Skip extra legs for single-nulls
+
+echo "fhtx psx qc m/ bb bx m/ m* 1.e6 rm/ ${FLUX_XPT_CELL[N]} writ f.y" | b2plot >& /dev/null   # Find peak Q_parallel at divertor throat
+
+   PEAK=0.0
+   for i in `seq $((NY+5)) $((NY+NY+6))`; do                    # Read lines of output file
+      BUFFER1=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`      # Read the cell in the line
+      BUFFER2=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`      # Read the value in the line
+      BUFFER2=${BUFFER2/E+/*10^}
+      BUFFER2=${BUFFER2/E-/*10^-}
+
+      if [[ `echo "$(ABS $BUFFER2) > $(ABS $PEAK)" | bc -l` = 1 ]]     # Test for new maximum
+      then
+         PEAK=$BUFFER2                      # Update peak
+         PEAK_CELL=$BUFFER1                 # Update radial cell of peak
+         PEAK_CELL=${PEAK_CELL%.*}          # Convert radial cell to integer
+      fi
+   done
+
+echo "hx $PEAK_CELL writ f.x" | b2plot >& /dev/null     # Get cell lengths to translate from cell centers to cell faces
+
+   for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+      HX[$i]=`awk -v var=$i 'NR==var{print $2}' $OUTFILE`
+      HX[$i]=${HX[i]/E+/*10^}; HX[$i]=${HX[i]/E-/*10^-}
+   done
+
+### Calculate sin(theta)  
+
+echo "qc bx bb m/ m* $PEAK_CELL writ f.x" | b2plot >& /dev/null
+
+echo "Field angle sin(theta) (@ cell face)" >> $ANALYSIS/Bsin_fx$N-info.txt
+echo "Units: none" >> $ANALYSIS/Bsin_fx$N-info.txt
+echo "IY = $PEAK_CELL" >> $ANALYSIS/Bsin_fx$N-info.txt
+
+for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+      DX[$i]=`awk -v var=$i 'NR==var{print $1}' $OUTFILE`
+      DX[$i]=${DX[i]/E+/*10^}; DX[$i]=${DX[i]/E-/*10^-}
+      FLUXDX[$i]=`echo "${DX[i]} - ${HX[i]}/2.0" | bc -l`
+
+   echo ${FLUXDX[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/Bsin_fx$N.txt
+done
+
+### Calculate A_parallel
+
+echo "sx qc m* bx bb m/ m* abs $PEAK_CELL writ f.x" | b2plot >& /dev/null
+
+echo "Flux tube area (@ cell face)" >> $ANALYSIS/Apara_fx$N-info.txt
+echo "Units: m^2" >> $ANALYSIS/Apara_fx$N-info.txt
+echo "IY = $PEAK_CELL" >> $ANALYSIS/Apara_fx$N-info.txt
+
+for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo ${FLUXDX[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/Apara_fx$N.txt
+done
+
+### Calculate Q_parallel  
+
+echo "fhtx psx qc m/ bb bx m/ m* 1.e6 rm/ $PEAK_CELL writ f.x" | b2plot >& /dev/null
+
+echo "Parallel heat flux (@ cell face)" >> $ANALYSIS/qpara_fx$N-info.txt
+echo "Units: MW/m^2" >> $ANALYSIS/qpara_fx$N-info.txt
+echo "IY = $PEAK_CELL" >> $ANALYSIS/qpara_fx$N-info.txt
+
+for i in `seq $((FLUX_XPT_CELL[N]+3)) $(INC) $((FLUX_TARG_CELL[N]+3))`; do      # Read profile for divertor
+   echo ${FLUXDX[i]} `awk -v var=$i 'NR==var{print $2}' $OUTFILE` >> $ANALYSIS/qpara_fx$N.txt
+done
+
+### Write values to file
+
+
+done   ### END LOOP THROUGH DIVERTOR LEGS ###
+
+
+################################
+################################
+################################
+
+echo ""
+echo "Analysis complete."
+echo "Results located in '$ANALYSIS' directory."
+echo "Summary information located in '$ANALYSIS/$SUMMARY'."
+
